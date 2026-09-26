@@ -1,11 +1,142 @@
 #!/bin/bash
-#SBATCH -J exatrkx_train
-#SBATCH -t 1440
-#SBATCH -p gpu_gce
-#SBATCH --gres=gpu:1
-#SBATCH -A fwk
-#SBATCH -q regular
-#SBATCH --cpus-per-task=12
-#SBATCH --signal=SIGUSR1@90
+#SBATCH -J nugraph_train
+#SBATCH -t 12:00:00
+#SBATCH --signal=B:USR1@300
+#SBATCH --requeue
+#SBATCH -p general
+#SBATCH -N 1
+#SBATCH --ntasks-per-node=8
+#SBATCH --gpus-per-task=1
+#SBATCH --gpu-bind=none
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=256G
 
-srun python scripts/train.py $@
+set -euo pipefail
+
+export NUGRAPH_DIR=/net/projects2/fermi2526/clinic-2026-fermi-neutrino-$USER/external/nugraph
+source /etc/profile.d/conda.sh
+source /net/projects2/fermi2526/setup-env.sh
+which python
+
+cd /net/projects2/fermi2526/clinic-2026-fermi-neutrino-$USER/ # path varies per user
+
+ulimit -n 65536
+echo "fd limit set to: $(ulimit -n)"
+
+child_pid=""
+
+export NUGRAPH_LOG="/net/projects2/fermi2526/logs/vihaan" # path varies per user
+
+# places output in NUGRAPH_LOG/TRAIN_NAME/TRAIN_VERSION
+# allows --name and --version configuration in command line without in-script change
+TRAIN_NAME="${FOLDER_NAME:-nugraph_default}"
+TRAIN_VERSION="${TEST_RUN_NAME:-v_${SLURM_JOB_ID:-default}}"
+RUN_SCOPE="${SLURM_JOB_ID:-${SLURM_ARRAY_JOB_ID:-$$}}"
+python_args=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --name)
+            if [[ $# -lt 2 ]]; then
+                echo "Missing value for --name" >&2
+                exit 2
+            fi
+            TRAIN_NAME="$2"
+            shift 2
+            ;;
+        --name=*)
+            TRAIN_NAME="${1#*=}"
+            shift
+            ;;
+        --version)
+            if [[ $# -lt 2 ]]; then
+                echo "Missing value for --version" >&2
+                exit 2
+            fi
+            TRAIN_VERSION="$2"
+            shift 2
+            ;;
+        --version=*)
+            TRAIN_VERSION="${1#*=}"
+            shift
+            ;;
+        *)
+            python_args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+RUN_DIR="${NUGRAPH_LOG}/${TRAIN_NAME}/${TRAIN_VERSION}/runs/${RUN_SCOPE}"
+CKPT_DIR="${RUN_DIR}/checkpoints"
+export NUGRAPH_RUN_DIR="$RUN_DIR"
+mkdir -p "$CKPT_DIR"
+
+signal_child_group() {
+    local signal="$1"
+    if [[ -n "${child_pid:-}" ]] && kill -0 "$child_pid" 2>/dev/null; then
+        echo "[$(date)] Sending ${signal} to training process group..."
+        kill -s "${signal}" -- "-$child_pid" 2>/dev/null || \
+        kill -s "${signal}" "$child_pid" 2>/dev/null || \
+        true
+    fi
+}
+
+# Handle Slurm's preemption warning signal.
+# Python should checkpoint and exit. In the usual Slurm path, this wrapper exits 99
+# to request requeue; if Python exits 99 directly, the defensive path below propagates it.
+on_preempt() {
+    echo "[$(date)] USR1 received: checkpointing before preemption or time-limit warning."
+    signal_child_group USR1
+    # Let Python checkpoint and exit. Slurm's grace window is the hard deadline.
+    wait "$child_pid" || true
+    # DSI cluster policy: exit code 99 tells Slurm to requeue this job.
+    echo "[$(date)] Exiting with code 99 for Slurm requeue policy."
+    exit 99
+}
+
+# Handle TERM if it reaches the batch shell, e.g. scancel --batch or scheduler cleanup.
+# Plain `scancel <jobid>` may terminate the Python process directly instead and will then
+# be handled by the `wait "$child_pid"` below.
+on_term() {
+    echo "[$(date)] TERM received: terminating without intentional requeue."
+    signal_child_group TERM
+    wait "$child_pid" || true
+    echo "[$(date)] Exiting due to TERM."
+    exit 143
+}
+
+trap on_preempt USR1
+trap on_term TERM
+
+# check only this job's dedicated checkpoint area so concurrent runs do not use each other's
+latest_ckpt=$(ls -1t "$CKPT_DIR"/*.ckpt "$RUN_DIR"/hpc_ckpt_*.ckpt 2>/dev/null | head -n1 || true)
+
+if [[ -n "${latest_ckpt:-}" ]]; then
+    echo "[$(date)] Resuming from checkpoint: $latest_ckpt (restart #${SLURM_RESTART_COUNT:-0})"
+    setsid srun --cpu-bind=none python /net/projects2/fermi2526/clinic-2026-fermi-neutrino-$USER/external/nugraph/scripts/train.py \
+        --name "$TRAIN_NAME" \
+        --version "$TRAIN_VERSION" \
+        --resume "$latest_ckpt" "${python_args[@]}" &
+else
+    echo "[$(date)] Starting fresh training run"
+    setsid srun --cpu-bind=none python /net/projects2/fermi2526/clinic-2026-fermi-neutrino-$USER/external/nugraph/scripts/train.py \
+        --name "$TRAIN_NAME" \
+        --version "$TRAIN_VERSION" "${python_args[@]}" &
+fi
+
+child_pid=$!
+return_code=0
+
+wait "$child_pid" || return_code=$?
+
+echo "[$(date)] Training exited with code ${return_code}"
+
+# Defensive path: if Python itself exits 99 after checkpointing, propagate that
+# as the Slurm requeue request. The normal Slurm path is still the USR1 trap above.
+if [[ "$return_code" -eq 99 ]]; then
+    echo "[$(date)] Training requested requeue via exit code 99."
+    exit 99
+fi
+
+exit "$return_code"

@@ -1,14 +1,17 @@
 #!/usr/bin/env python
+
+import torch
+torch.multiprocessing.set_sharing_strategy('file_system')
+
 import os
 import argparse
 import pathlib
 import signal
 import warnings
-
-import torch
 import pytorch_lightning as pl
 from pytorch_lightning.plugins.environments import SLURMEnvironment
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.strategies import DDPStrategy
 import nugraph as ng
 
 torch.set_num_threads(4)
@@ -49,9 +52,16 @@ def configure():
     parser = Model.add_model_args(parser)
     return parser.parse_args(), Model
 
+def resolve_run_dir(args) -> pathlib.Path:
+    run_dir = os.environ.get("NUGRAPH_RUN_DIR")
+    if run_dir:
+        return pathlib.Path(run_dir)
+
 def train(args, Model):
 
     torch.manual_seed(1)
+    run_dir = resolve_run_dir(args)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     # Load dataset
     nudata = Data(args.data_path, batch_size=args.batch_size,
@@ -99,14 +109,15 @@ def train(args, Model):
         callbacks.append(ModelCheckpoint(monitor="loss/val", mode="min"))
 
     # configure plugins
-    plugins = [
-        SLURMEnvironment(),
-    ]
+    plugins = [ SLURMEnvironment(requeue_signal=signal.SIGUSR1) ]
 
     accelerator, devices = ng.util.configure_device(args.device)
     trainer = pl.Trainer(
         accelerator=accelerator,
-        devices=devices,
+        num_nodes=1,
+        devices=8, # number of GPUs per node
+        strategy="ddp", # DDPStrategy(find_unused_parameters=True) if dimension mismatch - much slower
+        default_root_dir=str(run_dir),
         max_epochs=args.epochs,
         limit_train_batches=args.limit_train_batches,
         limit_val_batches=args.limit_val_batches,

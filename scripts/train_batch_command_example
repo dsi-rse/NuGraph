@@ -1,0 +1,11 @@
+cd /net/projects2/fermi2526/clinic-2026-fermi-neutrino-$USER/external/nugraph
+
+# the following all in one line - see nugraph3.py and data_module.py for flag definitions
+
+sbatch scripts/train_batch.sh
+--data-path /net/projects2/fermi2526/data/nugraph3-dsi.optical.fix.renamed.gnn.h5
+--name clinic-experiment --version test-all-features
+--semantic --filter --event --instance
+--batch-size 8 --featext --epochs 50
+--particle-loss --shuffle random --optical
+--num-workers 8
