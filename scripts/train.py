@@ -48,6 +48,8 @@ def configure():
     parser.add_argument('--precision', type=str, default='32',
                         choices=('32', 'bf16-mixed'),
                         help='Precision for training (default: 32, or bf16-mixed for AMP)')
+    parser.add_argument('--limit_test_batches', type=int, default=None,
+                        help='Accepted for compatibility; train.py does not run a test step')
     parser = Data.add_data_args(parser)
     parser = Model.add_model_args(parser)
     return parser.parse_args(), Model
@@ -115,7 +117,7 @@ def train(args, Model):
     trainer = pl.Trainer(
         accelerator=accelerator,
         num_nodes=1,
-        devices=8, # number of GPUs per node
+        devices=1, # number of GPUs per node
         strategy="ddp", # DDPStrategy(find_unused_parameters=True) if dimension mismatch - much slower
         default_root_dir=str(run_dir),
         max_epochs=args.epochs,
