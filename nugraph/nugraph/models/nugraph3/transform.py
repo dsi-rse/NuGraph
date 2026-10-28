@@ -89,8 +89,8 @@ class Transform(BaseTransform):
             evt.y = evt.y.reshape([1])
 
         # concatenate position tensor onto node features
-        h = data["hit"]
-        h.x = torch.cat((h.pos, h.x), dim=-1)
+        #h = data["hit"]
+        #h.x = torch.cat((h.pos, h.x), dim=-1)
 
         # construct pmt-pmt edges if not already present in the dataset
         if "pmt" in data.node_types and ("pmt", "knn", "pmt") not in data.edge_types:

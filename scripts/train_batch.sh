@@ -5,7 +5,7 @@
 #SBATCH --requeue
 #SBATCH -p general
 #SBATCH -N 1
-#SBATCH --ntasks-per-node=8
+#SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=1
 #SBATCH --gpu-bind=none
 #SBATCH --cpus-per-task=4
@@ -15,6 +15,7 @@ set -euo pipefail
 
 export NUGRAPH_DIR=/net/projects2/fermi2526/clinic-2026-fermi-neutrino-$USER/external/nugraph
 source /etc/profile.d/conda.sh
+export FERMI_DIR=/net/projects2/fermi2526
 source /net/projects2/fermi2526/setup-env.sh
 which python
 
@@ -25,7 +26,7 @@ echo "fd limit set to: $(ulimit -n)"
 
 child_pid=""
 
-export NUGRAPH_LOG="/net/projects2/fermi2526/logs/vihaan" # path varies per user
+export NUGRAPH_LOG="/net/projects2/fermi2526/logs/$USER" # path varies per user
 
 # places output in NUGRAPH_LOG/TRAIN_NAME/TRAIN_VERSION
 # allows --name and --version configuration in command line without in-script change
